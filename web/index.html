@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SecureChain · Mercado en vivo</title>
+  <link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+  <header>
+    <p class="marca">SecureChain</p>
+    <h1>Mercado en vivo</h1>
+    <p class="estado" id="estado" role="status">Conectando…</p>
+  </header>
+
+  <main>
+    <section aria-labelledby="t-precios">
+      <h2 id="t-precios">Precios</h2>
+      <table>
+        <thead>
+          <tr><th>Activo</th><th class="num">Precio</th><th class="num">24 h</th><th>Fuente</th><th>Actualizado</th></tr>
+        </thead>
+        <tbody id="precios"><tr><td colspan="5">Cargando…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section aria-labelledby="t-incidentes">
+      <h2 id="t-incidentes">Incidentes de seguridad recientes</h2>
+      <ul id="incidentes"><li>Cargando…</li></ul>
+    </section>
+  </main>
+
+  <footer>Datos: Binance (tiempo real). Las 3 capas: este sitio muestra, api-flask decide, MySQL protege.</footer>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

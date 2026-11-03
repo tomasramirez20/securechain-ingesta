@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ingesta-common"
+version = "0.2.0"
+description = "Piezas compartidas por los microservicios de SecureChain"
+requires-python = ">=3.11"
+dependencies = ["PyMySQL>=1.1"]
+
+[tool.setuptools]
+packages = ["ingesta_common"]

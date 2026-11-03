@@ -1,0 +1,43 @@
+# Plantilla de Container Apps para binance-ws. deploy/desplegar.sh reemplaza las variables.
+location: ${UBICACION}
+name: binance-ws
+type: Microsoft.App/containerApps
+tags:
+  proyecto: securechain
+properties:
+  managedEnvironmentId: ${ENTORNO_ID}
+  configuration:
+    activeRevisionsMode: Single
+    secrets:
+      - name: mysql-password
+        value: ${CLAVE_INGESTA}
+  template:
+    containers:
+      - name: binance-ws
+        image: ghcr.io/${DUENO}/securechain-binance-ws:latest
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        env:
+          - name: MYSQL_HOST
+            value: ${MYSQL_FQDN}
+          - name: MYSQL_DATABASE
+            value: ${BASE}
+          - name: MYSQL_USER
+            value: ingesta
+          - name: MYSQL_PASSWORD
+            secretRef: mysql-password
+          - name: BINANCE_SIMBOLOS
+            value: ${SIMBOLOS}
+        probes:
+          # Si deja de recibir precios 90 s, /healthz responde 503 y Container Apps lo reinicia.
+          - type: Liveness
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+    scale:
+      minReplicas: 1
+      maxReplicas: 1

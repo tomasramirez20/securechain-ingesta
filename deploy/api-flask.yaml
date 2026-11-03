@@ -1,0 +1,57 @@
+# Plantilla de Container Apps para api-flask. deploy/desplegar.sh reemplaza las variables.
+location: ${UBICACION}
+name: api-flask
+type: Microsoft.App/containerApps
+tags:
+  proyecto: securechain
+properties:
+  managedEnvironmentId: ${ENTORNO_ID}
+  configuration:
+    activeRevisionsMode: Single
+    secrets:
+      - name: mysql-password
+        value: ${CLAVE_API}
+    ingress:
+      external: true
+      targetPort: 8000
+      transport: auto
+      allowInsecure: false          # solo HTTPS: adiós al problema de contenido mixto
+      corsPolicy:                   # solo el sitio estático puede llamar a la API desde un navegador
+        allowedOrigins:
+          - ${URL_WEB}
+        allowedMethods:
+          - GET
+          - OPTIONS
+        maxAge: 3600
+  template:
+    containers:
+      - name: api-flask
+        image: ghcr.io/${DUENO}/securechain-api-flask:latest
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        env:
+          - name: MYSQL_HOST
+            value: ${MYSQL_FQDN}
+          - name: MYSQL_DATABASE
+            value: ${BASE}
+          - name: MYSQL_USER
+            value: api_lectura
+          - name: MYSQL_PASSWORD
+            secretRef: mysql-password
+        probes:
+          - type: Liveness
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 30
+          - type: Readiness
+            httpGet:
+              path: /readyz
+              port: 8000
+            periodSeconds: 15
+            failureThreshold: 3
+    scale:
+      # Sin tráfico se apaga (0 réplicas) y no consume; la primera visita tarda unos segundos.
+      minReplicas: 0
+      maxReplicas: 2
