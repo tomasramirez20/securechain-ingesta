@@ -1,0 +1,4 @@
+-r services/binance-ws/requirements.txt
+-r services/api-flask/requirements.txt
+pytest>=8
+pytest-asyncio>=0.23
