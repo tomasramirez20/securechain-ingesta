@@ -23,6 +23,7 @@ properties:
           - GET
           - OPTIONS
         maxAge: 3600
+        allowCredentials: false
   template:
     containers:
       - name: api-flask
