@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root-ci
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot-ci"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      MYSQL_TEST_HOST: 127.0.0.1
+      MYSQL_TEST_PORT: "3306"
+      MYSQL_TEST_ADMIN_USER: root
+      MYSQL_TEST_ADMIN_PASSWORD: root-ci
+      MYSQL_TEST_DATABASE: securechain_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt ./common
+      - run: pytest -v
+
+  imagenes:
+    needs: pruebas
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        servicio: [binance-ws, api-flask, db-init]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nombre del dueño en minúsculas (GHCR lo exige)
+        run: echo "DUENO=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.servicio }}/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ env.DUENO }}/securechain-${{ matrix.servicio }}:${{ github.sha }}
+            ghcr.io/${{ env.DUENO }}/securechain-${{ matrix.servicio }}:latest
