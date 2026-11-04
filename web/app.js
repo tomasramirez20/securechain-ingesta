@@ -213,7 +213,9 @@ function pintarMercado() {
     tr.cells[2].className = `num cambio ${var24 >= 0 ? "sube" : "baja"}`;
     tr.cells[2].textContent = porcentaje(var24);
     const serie = (chispas[s] || []).map((k) => k[4]);
-    if (serie.length && serie[serie.length - 1] !== undefined) serie[serie.length - 1] = Number(p.precio);
+    // Con la ingesta en vivo, el último punto es el precio de este instante; en pausa, manda el histórico.
+    const enVivo = (Date.now() - Date.parse(p.evento_ts)) / 1000 <= VIVO_MAX_S;
+    if (serie.length && enVivo) serie[serie.length - 1] = Number(p.precio);
     tr.cells[3].replaceChildren(SCGraficas.chispa(serie, serie.length > 1 ? serie[serie.length - 1] >= serie[0] : var24 >= 0));
     tr.cells[4].textContent = `${compacto(Number(p.volumen_24h) * Number(p.precio))} USDT`;
     tr.cells[4].title = `${Number(p.volumen_24h).toLocaleString("es-CO")} ${cortoDe(s)} negociados en 24 h`;
