@@ -6,6 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Si llegan varios commits seguidos, solo termina el último: así una ejecución vieja
+# nunca publica una imagen :latest encima de una más nueva.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pruebas:
     runs-on: ubuntu-latest
@@ -41,7 +47,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        servicio: [binance-ws, api-flask, db-init]
+        servicio: [binance-ws, binance-velas, api-flask, db-init]
     steps:
       - uses: actions/checkout@v4
       - name: Nombre del dueño en minúsculas (GHCR lo exige)
