@@ -70,6 +70,16 @@ class Repositorio:
         params.append(limite)
         return self._consultar(sql, tuple(params))
 
+    def velas(self, intervalo: str, desde: datetime, simbolo: str | None = None) -> list[dict]:
+        sql = ("SELECT simbolo, apertura_ts, apertura, maximo, minimo, cierre, volumen "
+               "FROM velas WHERE fuente = 'binance' AND intervalo = %s AND apertura_ts >= %s")
+        params: list = [intervalo, desde]
+        if simbolo:
+            sql += " AND simbolo = %s"
+            params.append(simbolo)
+        sql += " ORDER BY simbolo, apertura_ts"
+        return self._consultar(sql, tuple(params))
+
     def eventos(self, limite: int) -> list[dict]:
         return self._consultar(
             "SELECT fuente, id_activo, id_mercado, pregunta, precio, evento_ts "

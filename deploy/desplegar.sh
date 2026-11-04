@@ -13,10 +13,13 @@
 #   entorno     Log Analytics + entorno de Container Apps en la VNet.
 #   dbinit      Trabajo db-init: crea tablas y usuarios con permisos mínimos.
 #   binance     Contenedor binance-ws (siempre encendido: consume crédito).
+#   velas       Trabajo programado binance-velas (histórico para las gráficas) y primera carga.
 #   web         Storage Account con sitio estático.
 #   api         Contenedor api-flask con HTTPS y CORS solo para el sitio estático.
 #   subir-web   Sube el frontend con la dirección de la API.
 #   estado      Resumen de lo desplegado y verificación rápida.
+#   solicitudes Muestra las últimas solicitudes del Sello (las lee db-init dentro de la VNet).
+#   reconstruir Recupera deploy/.estado desde Azure si se perdió (nueva sesión de Cloud Shell).
 #
 # Las claves se generan aquí, se guardan en deploy/.estado (permisos 600, fuera de
 # git) y en Azure solo como secretos de Container Apps. Nunca se imprimen.
@@ -36,6 +39,9 @@ LOGS=${LOGS:-log-securechain}
 BASE=${BASE:-securechain}
 ADMIN_MYSQL=${ADMIN_MYSQL:-scadmin}
 SIMBOLOS=${SIMBOLOS:-btcusdt,ethusdt,solusdt,bnbusdt,xrpusdt,adausdt}
+# Cada 6 horas basta: la demo (deploy/ahorro.sh demo) lo ejecuta además al momento.
+HORARIO_VELAS=${HORARIO_VELAS:-"23 */6 * * *"}
+VERSION_DESPLIEGUE=$(date -u +%Y%m%d%H%M%S)
 ETIQUETAS="proyecto=securechain"
 
 guardar() {  # guardar NOMBRE valor  → persiste en deploy/.estado
@@ -48,6 +54,21 @@ guardar() {  # guardar NOMBRE valor  → persiste en deploy/.estado
 
 clave_nueva() {  # 3 categorías garantizadas (mayúscula, minúscula, dígito) + 24 aleatorios
   printf 'Sc9%s' "$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)"
+}
+
+esperar_trabajo() {  # esperar_trabajo TRABAJO EJECUCION → 0 si terminó bien
+  local trabajo=$1 ejecucion=$2 estado
+  echo "Ejecutando $ejecucion..."
+  for _ in $(seq 1 120); do
+    estado=$(az containerapp job execution show -g "$GRUPO" -n "$trabajo" --job-execution-name "$ejecucion" --query properties.status -o tsv)
+    case "$estado" in
+      Succeeded) return 0;;
+      Failed) echo "$trabajo falló. Logs: portal → Container Apps Jobs → $trabajo → Historial de ejecuciones" >&2; return 1;;
+    esac
+    sleep 5
+  done
+  echo "$trabajo sigue corriendo; revisa más tarde en el portal." >&2
+  return 1
 }
 
 requerir() {
@@ -144,29 +165,84 @@ dbinit)
   guardar DUENO "$DUENO"
   [ -n "${CLAVE_INGESTA:-}" ] || guardar CLAVE_INGESTA "$(clave_nueva)"
   [ -n "${CLAVE_API:-}" ] || guardar CLAVE_API "$(clave_nueva)"
+  [ -n "${CLAVE_REGISTRO:-}" ] || guardar CLAVE_REGISTRO "$(clave_nueva)"
   titulo "Trabajo db-init"
   if az containerapp job show -g "$GRUPO" -n db-init -o none 2>/dev/null; then
     az containerapp job secret set -g "$GRUPO" -n db-init \
-      --secrets "admin-pw=$CLAVE_ADMIN" "ingesta-pw=$CLAVE_INGESTA" "api-pw=$CLAVE_API" -o none
+      --secrets "admin-pw=$CLAVE_ADMIN" "ingesta-pw=$CLAVE_INGESTA" "api-pw=$CLAVE_API" \
+        "registro-pw=$CLAVE_REGISTRO" -o none
+    az containerapp job update -g "$GRUPO" -n db-init --image "ghcr.io/${DUENO}/securechain-db-init:latest" \
+      --set-env-vars "REGISTRO_PASSWORD=secretref:registro-pw" "VERSION_DESPLIEGUE=$VERSION_DESPLIEGUE" -o none
   else
     az containerapp job create -g "$GRUPO" -n db-init --environment "$ENTORNO" \
       --trigger-type Manual --replica-timeout 300 --replica-retry-limit 1 \
       --replica-completion-count 1 --parallelism 1 \
       --image "ghcr.io/${DUENO}/securechain-db-init:latest" --cpu 0.25 --memory 0.5Gi \
       --secrets "admin-pw=$CLAVE_ADMIN" "ingesta-pw=$CLAVE_INGESTA" "api-pw=$CLAVE_API" \
+        "registro-pw=$CLAVE_REGISTRO" \
       --env-vars "MYSQL_HOST=$MYSQL_FQDN" "MYSQL_DATABASE=$BASE" "MYSQL_ADMIN_USER=$ADMIN_MYSQL" \
         "MYSQL_ADMIN_PASSWORD=secretref:admin-pw" "INGESTA_PASSWORD=secretref:ingesta-pw" \
-        "API_PASSWORD=secretref:api-pw" --tags $ETIQUETAS -o none
+        "API_PASSWORD=secretref:api-pw" "REGISTRO_PASSWORD=secretref:registro-pw" --tags $ETIQUETAS -o none
   fi
   ejecucion=$(az containerapp job start -g "$GRUPO" -n db-init --query name -o tsv)
-  echo "Ejecutando $ejecucion..."
-  for _ in $(seq 1 60); do
-    estado=$(az containerapp job execution show -g "$GRUPO" -n db-init --job-execution-name "$ejecucion" --query properties.status -o tsv)
-    case "$estado" in Succeeded) echo "db-init terminó bien: tablas y usuarios listos."; exit 0;;
-                      Failed) echo "db-init falló. Revisa sus logs en el portal: Container Apps Jobs → db-init → Historial de ejecuciones" >&2; exit 1;; esac
-    sleep 5
+  esperar_trabajo db-init "$ejecucion" && echo "db-init terminó bien: tablas, usuarios y permisos listos."
+  ;;
+
+velas)
+  requerir DUENO ENTORNO_ID MYSQL_FQDN CLAVE_INGESTA
+  titulo "Trabajo programado binance-velas (horario: $HORARIO_VELAS UTC)"
+  if az containerapp job show -g "$GRUPO" -n binance-velas -o none 2>/dev/null; then
+    az containerapp job secret set -g "$GRUPO" -n binance-velas --secrets "ingesta-pw=$CLAVE_INGESTA" -o none
+    az containerapp job update -g "$GRUPO" -n binance-velas --cron-expression "$HORARIO_VELAS" \
+      --image "ghcr.io/${DUENO}/securechain-binance-velas:latest" \
+      --set-env-vars "VERSION_DESPLIEGUE=$VERSION_DESPLIEGUE" -o none
+  else
+    az containerapp job create -g "$GRUPO" -n binance-velas --environment "$ENTORNO" \
+      --trigger-type Schedule --cron-expression "$HORARIO_VELAS" \
+      --replica-timeout 600 --replica-retry-limit 1 --replica-completion-count 1 --parallelism 1 \
+      --image "ghcr.io/${DUENO}/securechain-binance-velas:latest" --cpu 0.25 --memory 0.5Gi \
+      --secrets "ingesta-pw=$CLAVE_INGESTA" \
+      --env-vars "MYSQL_HOST=$MYSQL_FQDN" "MYSQL_DATABASE=$BASE" "MYSQL_USER=ingesta" \
+        "MYSQL_PASSWORD=secretref:ingesta-pw" "BINANCE_SIMBOLOS=$SIMBOLOS" --tags $ETIQUETAS -o none
+  fi
+  ejecucion=$(az containerapp job start -g "$GRUPO" -n binance-velas --query name -o tsv)
+  echo "Primera carga del histórico ($ejecucion), tarda menos de un minuto..."
+  esperar_trabajo binance-velas "$ejecucion" && echo "Histórico listo para las gráficas."
+  ;;
+
+solicitudes)
+  requerir MYSQL_FQDN
+  titulo "Últimas solicitudes del Sello (las lee db-init dentro de la VNet)"
+  ejecucion=$(az containerapp job start -g "$GRUPO" -n db-init --container-name db-init \
+    --image "ghcr.io/${DUENO}/securechain-db-init:latest" \
+    --command "python" --args "-m" "db_init.solicitudes" --query name -o tsv)
+  esperar_trabajo db-init "$ejecucion" || exit 1
+  echo "Los resultados están en los logs de la ejecución $ejecucion:"
+  echo "  portal → Container Apps Jobs → db-init → Historial de ejecuciones → $ejecucion → Logs de consola"
+  ;;
+
+reconstruir)
+  titulo "Recuperando deploy/.estado desde Azure (no se imprime ninguna clave)"
+  guardar UBICACION "$(az group show -n "$GRUPO" --query location -o tsv)"
+  guardar ENTORNO_ID "$(az containerapp env show -g "$GRUPO" -n "$ENTORNO" --query id -o tsv)"
+  guardar MYSQL_SERVIDOR "$(az mysql flexible-server list -g "$GRUPO" --query '[0].name' -o tsv)"
+  guardar MYSQL_FQDN "$(az mysql flexible-server show -g "$GRUPO" -n "$MYSQL_SERVIDOR" --query fullyQualifiedDomainName -o tsv)"
+  guardar CUENTA_WEB "$(az storage account list -g "$GRUPO" --query "[?starts_with(name, 'stsecurechain')].name | [0]" -o tsv)"
+  guardar URL_WEB "$(az storage account show -g "$GRUPO" -n "$CUENTA_WEB" --query primaryEndpoints.web -o tsv | sed 's:/*$::')"
+  guardar URL_API "https://$(az containerapp show -g "$GRUPO" -n api-flask --query properties.configuration.ingress.fqdn -o tsv)"
+  imagen=$(az containerapp show -g "$GRUPO" -n api-flask --query 'properties.template.containers[0].image' -o tsv)
+  dueno=${imagen#ghcr.io/}; guardar DUENO "${dueno%%/*}"
+  guardar CLAVE_INGESTA "$(az containerapp secret list -g "$GRUPO" -n binance-ws --show-values --query "[?name=='mysql-password'].value | [0]" -o tsv)"
+  guardar CLAVE_API "$(az containerapp secret list -g "$GRUPO" -n api-flask --show-values --query "[?name=='mysql-password'].value | [0]" -o tsv)"
+  guardar CLAVE_ADMIN "$(az containerapp job secret list -g "$GRUPO" -n db-init --show-values --query "[?name=='admin-pw'].value | [0]" -o tsv)"
+  registro=$(az containerapp secret list -g "$GRUPO" -n api-flask --show-values --query "[?name=='registro-password'].value | [0]" -o tsv)
+  [ -n "$registro" ] && guardar CLAVE_REGISTRO "$registro"
+  faltan=""
+  for v in UBICACION ENTORNO_ID MYSQL_FQDN CUENTA_WEB URL_WEB URL_API DUENO CLAVE_INGESTA CLAVE_API CLAVE_ADMIN; do
+    [ -n "${!v:-}" ] || faltan="$faltan $v"
   done
-  echo "db-init sigue corriendo; revisa más tarde con el paso 'estado'."
+  if [ -n "$faltan" ]; then echo "No se pudo recuperar:$faltan" >&2; exit 1; fi
+  echo "deploy/.estado recuperado (${CUENTA_WEB}, ${MYSQL_SERVIDOR}). Las claves quedaron solo en ese archivo."
   ;;
 
 binance)
@@ -196,9 +272,9 @@ web)
   ;;
 
 api)
-  requerir DUENO ENTORNO_ID MYSQL_FQDN CLAVE_API URL_WEB
+  requerir DUENO ENTORNO_ID MYSQL_FQDN CLAVE_API CLAVE_REGISTRO URL_WEB
   titulo "Contenedor api-flask (HTTPS, CORS solo para $URL_WEB, escala de 0 a 2)"
-  export UBICACION ENTORNO_ID DUENO MYSQL_FQDN CLAVE_API BASE URL_WEB
+  export UBICACION ENTORNO_ID DUENO MYSQL_FQDN CLAVE_API CLAVE_REGISTRO BASE URL_WEB VERSION_DESPLIEGUE
   archivo=$(renderizar deploy/api-flask.yaml)
   if az containerapp show -g "$GRUPO" -n api-flask -o none 2>/dev/null; then
     az containerapp update -g "$GRUPO" -n api-flask --yaml "$archivo" -o none
@@ -216,7 +292,9 @@ subir-web)
   tmp=$(mktemp -d)
   cp -r web/. "$tmp/"
   printf 'window.SECURECHAIN_API = "%s";\n' "$URL_API" > "$tmp/config.js"
-  az storage blob upload-batch --account-name "$CUENTA_WEB" -s "$tmp" -d '$web' --overwrite -o none
+  # Caché corta: un cambio en el sitio se ve en 1 minuto, sin pedir los archivos en cada visita.
+  az storage blob upload-batch --account-name "$CUENTA_WEB" -s "$tmp" -d '$web' --overwrite \
+    --content-cache-control "public, max-age=60" --auth-mode key -o none
   rm -rf "$tmp"
   echo "Listo: $URL_WEB"
   ;;
@@ -235,7 +313,7 @@ estado)
   ;;
 
 *)
-  sed -n '2,22p' "$0"
+  sed -n '2,25p' "$0"
   exit 1
   ;;
 esac

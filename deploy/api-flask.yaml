@@ -11,6 +11,8 @@ properties:
     secrets:
       - name: mysql-password
         value: ${CLAVE_API}
+      - name: registro-password
+        value: ${CLAVE_REGISTRO}
     ingress:
       external: true
       targetPort: 8000
@@ -21,7 +23,10 @@ properties:
           - ${URL_WEB}
         allowedMethods:
           - GET
+          - POST                    # solo lo usa el formulario del Sello (/api/solicitudes)
           - OPTIONS
+        allowedHeaders:
+          - content-type
         maxAge: 3600
         allowCredentials: false
   template:
@@ -40,6 +45,14 @@ properties:
             value: api_lectura
           - name: MYSQL_PASSWORD
             secretRef: mysql-password
+          # Segundo usuario, solo INSERT en solicitudes_sello: el formulario no puede leer ni borrar nada.
+          - name: MYSQL_REGISTRO_USER
+            value: api_registro
+          - name: MYSQL_REGISTRO_PASSWORD
+            secretRef: registro-password
+          # Cambia en cada despliegue: obliga a crear una revisión nueva con la imagen :latest recién publicada.
+          - name: VERSION_DESPLIEGUE
+            value: "${VERSION_DESPLIEGUE}"
         probes:
           - type: Liveness
             httpGet:

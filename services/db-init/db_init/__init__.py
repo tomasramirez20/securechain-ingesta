@@ -2,10 +2,13 @@
 
 1. Crea la base de datos si no existe.
 2. Crea o actualiza las tablas de db/schema.sql.
-3. Crea dos usuarios con el mínimo de permisos:
-     - ingesta:      SELECT, INSERT, UPDATE  (los microservicios de ingesta)
-     - api_lectura:  SELECT                  (api-flask)
-   y les asigna la clave que llegue por variable de entorno (si cambia, la actualiza).
+3. Crea tres usuarios con el mínimo de permisos, tabla por tabla:
+     - ingesta:       SELECT, INSERT, UPDATE en las tablas de mercado (binance-ws, binance-velas)
+     - api_lectura:   SELECT en las tablas de mercado                 (api-flask, lectura)
+     - api_registro:  solo INSERT en solicitudes_sello                (api-flask, formulario del Sello)
+   Nadie, salvo el administrador, puede leer las solicitudes: ahí hay datos de contacto.
+   Cada usuario recibe la clave que llegue por variable de entorno (si cambia, la actualiza).
+   Los permisos se recalculan en cada ejecución (REVOKE y GRANT), así que nunca quedan de más.
 
 Se conecta con el usuario administrador del servidor, que solo usa este trabajo.
 Corre dentro de la VNet como trabajo de Container Apps, porque MySQL no tiene acceso público.
@@ -24,10 +27,13 @@ from ingesta_common.logs import configurar_logs
 ESQUEMA_DEFECTO = Path(__file__).resolve().parent / "schema.sql"
 NOMBRE_VALIDO = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
+TABLAS_MERCADO = ("precios", "historicos", "incidentes", "eventos", "velas")
+
 USUARIOS = {
-    # usuario: (variable con la clave, permisos)
-    "ingesta": ("INGESTA_PASSWORD", "SELECT, INSERT, UPDATE"),
-    "api_lectura": ("API_PASSWORD", "SELECT"),
+    # usuario: (variable con la clave, {tabla: permisos})
+    "ingesta": ("INGESTA_PASSWORD", {t: "SELECT, INSERT, UPDATE" for t in TABLAS_MERCADO}),
+    "api_lectura": ("API_PASSWORD", {t: "SELECT" for t in TABLAS_MERCADO}),
+    "api_registro": ("REGISTRO_PASSWORD", {"solicitudes_sello": "INSERT"}),
 }
 
 
@@ -46,7 +52,7 @@ def preparar(conn, base: str, esquema: str, claves: dict[str, str], log) -> None
         for s in sentencias_sql(esquema):
             cur.execute(s)
         log.info("Tablas listas", extra={"datos": {"base": base}})
-        for usuario, (variable, permisos) in USUARIOS.items():
+        for usuario, (variable, permisos_por_tabla) in USUARIOS.items():
             clave = claves.get(usuario)
             if not clave:
                 log.warning("Sin clave para el usuario; no se crea", extra={"datos": {"usuario": usuario,
@@ -55,8 +61,12 @@ def preparar(conn, base: str, esquema: str, claves: dict[str, str], log) -> None
             cur.execute(f"CREATE USER IF NOT EXISTS '{usuario}'@'%%' IDENTIFIED BY %s", (clave,))
             cur.execute(f"ALTER USER '{usuario}'@'%%' IDENTIFIED BY %s", (clave,))
             # Sin parámetros PyMySQL no interpreta %, por eso aquí va un solo '%'.
-            cur.execute(f"GRANT {permisos} ON `{base}`.* TO '{usuario}'@'%'")
-            log.info("Usuario listo", extra={"datos": {"usuario": usuario, "permisos": permisos}})
+            # Se parte de cero para que no sobrevivan permisos de versiones anteriores
+            # (por ejemplo, el antiguo SELECT sobre toda la base).
+            cur.execute(f"REVOKE ALL PRIVILEGES, GRANT OPTION FROM '{usuario}'@'%'")
+            for tabla, permisos in permisos_por_tabla.items():
+                cur.execute(f"GRANT {permisos} ON `{base}`.`{tabla}` TO '{usuario}'@'%'")
+            log.info("Usuario listo", extra={"datos": {"usuario": usuario, "permisos": permisos_por_tabla}})
     conn.commit()
 
 

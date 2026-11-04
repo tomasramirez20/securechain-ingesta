@@ -55,3 +55,39 @@ CREATE TABLE IF NOT EXISTS eventos (
   actualizado_en     TIMESTAMP(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (fuente, id_activo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Velas (OHLCV) de Binance para las gráficas del sitio (alimentada por el trabajo binance-velas).
+-- intervalo: 1h (últimos días) o 1d (varios años). La vela abierta se reescribe hasta que cierra.
+CREATE TABLE IF NOT EXISTS velas (
+  fuente             VARCHAR(20)    NOT NULL,
+  simbolo            VARCHAR(30)    NOT NULL,
+  intervalo          VARCHAR(5)     NOT NULL,
+  apertura_ts        DATETIME       NOT NULL COMMENT 'Inicio de la vela (UTC)',
+  apertura           DECIMAL(30,12) NOT NULL,
+  maximo             DECIMAL(30,12) NOT NULL,
+  minimo             DECIMAL(30,12) NOT NULL,
+  cierre             DECIMAL(30,12) NOT NULL,
+  volumen            DECIMAL(38,8)  NOT NULL,
+  actualizado_en     TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (fuente, simbolo, intervalo, apertura_ts),
+  KEY idx_velas_intervalo_ts (intervalo, apertura_ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Solicitudes del Sello de Confianza enviadas desde el sitio por exchanges y brokers.
+-- Solo el usuario api_registro puede escribir aquí (INSERT) y ningún servicio público puede leerla.
+CREATE TABLE IF NOT EXISTS solicitudes_sello (
+  id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  creado_en          TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  empresa            VARCHAR(120)   NOT NULL,
+  sitio_web          VARCHAR(200)   NOT NULL,
+  tipo               VARCHAR(20)    NOT NULL COMMENT 'exchange, broker, custodio u otro',
+  pais               VARCHAR(60)    NOT NULL,
+  contacto           VARCHAR(120)   NOT NULL,
+  cargo              VARCHAR(80)    NULL,
+  correo             VARCHAR(160)   NOT NULL,
+  interes            VARCHAR(20)    NOT NULL COMMENT 'diagnostico, sello o renovacion',
+  mensaje            VARCHAR(1000)  NULL,
+  referencia         CHAR(10)       NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_solicitudes_referencia (referencia)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

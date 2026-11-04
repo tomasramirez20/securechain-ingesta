@@ -2,7 +2,7 @@
 # SecureChain · modo ahorro mientras el proyecto se presenta y se aprueba.
 #   ./deploy/ahorro.sh alertas   Alertas de presupuesto: 50, 80 y 100 % del crédito (y pronóstico)
 #   ./deploy/ahorro.sh apagar    Detiene la ingesta continua y limita los logs (modo ahorro)
-#   ./deploy/ahorro.sh demo      Enciende la ingesta y precalienta la API antes de presentar
+#   ./deploy/ahorro.sh demo      Enciende la ingesta, actualiza las gráficas y precalienta la API
 #   ./deploy/ahorro.sh estado    Qué está encendido ahora
 set -euo pipefail
 
@@ -45,12 +45,17 @@ apagar)
   # Tope diario de 0,1 GB para Log Analytics: evita sorpresas si algo empieza a escribir logs de más.
   az monitor log-analytics workspace update -g "$GRUPO" -n "$LOGS" --quota 0.1 -o none
   echo "Modo ahorro activo: binance-ws detenido, sin consumo."
+  echo "Recuerda cerrar las pestañas del sitio: mientras estén abiertas, api-flask no baja a 0 réplicas."
   echo "MySQL conserva los últimos precios; api-flask se apaga sola sin tráfico y el sitio sigue en línea."
   ;;
 
 demo)
   r=$(az containerapp show -g "$GRUPO" -n binance-ws --query properties.latestRevisionName -o tsv)
   az containerapp revision activate -g "$GRUPO" -n binance-ws --revision "$r" -o none
+  # Actualiza el histórico de las gráficas (el trabajo también corre solo cada 6 horas).
+  if az containerapp job show -g "$GRUPO" -n binance-velas -o none 2>/dev/null; then
+    az containerapp job start -g "$GRUPO" -n binance-velas -o none && echo "Gráficas: actualizando el histórico de Binance."
+  fi
   url=$(az containerapp show -g "$GRUPO" -n api-flask --query properties.configuration.ingress.fqdn -o tsv)
   echo "Ingesta encendida. Esperando precios en vivo (suele tardar 1 a 2 minutos)..."
   # Se da por lista cuando el precio más reciente tiene menos de 60 s; esto también
@@ -78,6 +83,9 @@ estado)
     az containerapp revision list -g "$GRUPO" -n "$app" \
       --query "[].{revision:name, activa:properties.active, replicas:properties.replicas}" -o table
   done
+  echo "== binance-velas (trabajo programado: solo consume mientras corre, menos de 1 minuto)"
+  az containerapp job execution list -g "$GRUPO" -n binance-velas \
+    --query "[0:3].{ejecucion:name, estado:properties.status, inicio:properties.startTime}" -o table 2>/dev/null || echo "(no desplegado)"
   echo "== MySQL"
   az mysql flexible-server list -g "$GRUPO" --query "[].{servidor:name, estado:state, sku:sku.name}" -o table
   echo "Crédito restante: portal → Education → Información general."

@@ -14,7 +14,9 @@ from pathlib import Path
 import pymysql
 import pytest
 
+from api_flask.registro import Registro
 from api_flask.repositorio import Repositorio
+from binance_velas import SQL_UPSERT_VELAS, parsear_velas
 from binance_ws.__main__ import SQL_UPSERT_PRECIOS
 from db_init import preparar
 from ingesta_common.mysql_sink import MySQLSink
@@ -24,7 +26,8 @@ pytestmark = pytest.mark.skipif(not os.environ.get("MYSQL_TEST_HOST"),
 
 ESQUEMA = (Path(__file__).resolve().parents[1] / "db" / "schema.sql").read_text(encoding="utf-8")
 BASE = os.environ.get("MYSQL_TEST_DATABASE", "securechain_test")
-CLAVES = {"ingesta": "clave-ingesta-prueba", "api_lectura": "clave-api-prueba"}
+CLAVES = {"ingesta": "clave-ingesta-prueba", "api_lectura": "clave-api-prueba",
+          "api_registro": "clave-registro-prueba"}
 
 
 def conexion_admin(**extra):
@@ -43,9 +46,14 @@ def base_preparada():
     conn = conexion_admin()
     try:
         preparar(conn, BASE, ESQUEMA, CLAVES, logging.getLogger("prueba"))
+        # Simula el permiso antiguo (SELECT sobre toda la base): la siguiente ejecución debe quitarlo.
+        with conn.cursor() as cur:
+            cur.execute(f"GRANT SELECT ON `{BASE}`.* TO 'api_lectura'@'%'")
         preparar(conn, BASE, ESQUEMA, CLAVES, logging.getLogger("prueba"))   # idempotente
         with conn.cursor() as cur:
             cur.execute(f"DELETE FROM `{BASE}`.precios")
+            cur.execute(f"DELETE FROM `{BASE}`.velas")
+            cur.execute(f"DELETE FROM `{BASE}`.solicitudes_sello")
         conn.commit()
     finally:
         conn.close()
@@ -107,3 +115,52 @@ async def test_sink_reconecta_si_mysql_cierra_la_conexion(base_preparada):
         assert Repositorio(**params("api_lectura")).precios(simbolo="BTCUSDT")[0]["precio"] == Decimal("200")
     finally:
         sink.cerrar()
+
+
+def conectar_como(usuario):
+    p = params(usuario)
+    return pymysql.connect(host=p["host"], port=p["puerto"], user=p["usuario"], password=p["clave"], database=BASE)
+
+
+def test_velas_idempotentes_y_legibles_por_la_api(base_preparada):
+    kline = [1762250400000, "70000", "70500", "69900", "70400", "12.5"]
+    conn = conectar_como("ingesta")
+    try:
+        with conn.cursor() as cur:
+            filas = [v.fila() for v in parsear_velas("BTCUSDT", "1h", [kline])]
+            cur.executemany(SQL_UPSERT_VELAS, filas)
+            cur.executemany(SQL_UPSERT_VELAS, filas)                       # repetido: no duplica
+            abierta = list(kline)
+            abierta[4] = "70450"                                           # la vela en curso cambia
+            cur.executemany(SQL_UPSERT_VELAS, [v.fila() for v in parsear_velas("BTCUSDT", "1h", [abierta])])
+        conn.commit()
+    finally:
+        conn.close()
+    filas = Repositorio(**params("api_lectura")).velas("1h", datetime(2025, 11, 1))
+    assert len(filas) == 1 and filas[0]["cierre"] == Decimal("70450")
+
+
+def test_registro_solo_puede_insertar_solicitudes(base_preparada):
+    solicitud = {"empresa": "Exchange X", "sitio_web": "x.co", "tipo": "exchange", "pais": "Colombia",
+                 "contacto": "Ana", "cargo": None, "correo": "ana@x.co", "interes": "sello", "mensaje": None}
+    ref = Registro(**params("api_registro")).guardar(solicitud)
+    assert ref.startswith("SC-") and len(ref) == 10
+    conn = conectar_como("api_registro")
+    try:
+        with conn.cursor() as cur:
+            for sql in ("SELECT * FROM solicitudes_sello", "SELECT * FROM precios",
+                        "DELETE FROM solicitudes_sello", "INSERT INTO precios (fuente) VALUES ('x')"):
+                with pytest.raises(pymysql.err.MySQLError):
+                    cur.execute(sql)
+    finally:
+        conn.close()
+
+
+def test_nadie_publico_puede_leer_las_solicitudes(base_preparada):
+    for usuario in ("api_lectura", "ingesta"):
+        conn = conectar_como(usuario)
+        try:
+            with conn.cursor() as cur, pytest.raises(pymysql.err.MySQLError):
+                cur.execute("SELECT correo FROM solicitudes_sello")
+        finally:
+            conn.close()

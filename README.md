@@ -41,11 +41,14 @@ Un sello solo genera confianza si se apoya en datos verificables. El **Trust Cen
 | Prototipo inicial | Arquitectura de 3 capas en 2 VMs de Azure (IIS + Flask/MySQL), con VNet peering y NSG. Se validó el aislamiento con el experimento "Failed to fetch". |
 | Rediseño nube nativa | Las 3 capas se mantienen, pero sin VMs: sitio estático, contenedores y base de datos administrada. Se eliminaron IIS, IPs públicas, peering y administración por RDP/SSH. |
 | Microservicios | `binance-ws` (ingesta en tiempo real), `api-flask` (API de solo lectura), `db-init` (preparación de la base), sobre una librería común. |
-| Calidad | 34 pruebas automáticas: Binance simulado (cortes, silencio, bloqueo 451, datos fuera de orden), API, y MySQL real con verificación de permisos mínimos. |
-| CI/CD | GitHub Actions corre las pruebas contra MySQL 8.4 y publica las 3 imágenes en GitHub Container Registry en cada cambio a `main`. |
+| Calidad | 52 pruebas automáticas: Binance simulado (cortes, silencio, bloqueo 451, datos fuera de orden), API, y MySQL real con verificación de permisos mínimos. |
+| CI/CD | GitHub Actions corre las pruebas contra MySQL 8.4 y publica las 4 imágenes en GitHub Container Registry en cada cambio a `main`. |
 | Despliegue | Infraestructura como código (`deploy/desplegar.sh` + plantillas YAML) en Azure Container Apps, región Spain Central. |
 | Verificación | Ingesta real de Binance escribiendo en MySQL privado; la API y el sitio muestran precios en vivo. |
 | Operación eficiente | Modo ahorro (`deploy/ahorro.sh`): la ingesta se apaga entre presentaciones, la API escala a cero y hay alertas al 50, 80 y 100 % del crédito. |
+| Trust Center interactivo | Sitio rediseñado (sigue siendo estático): gráficas propias en SVG con el histórico de Binance (línea, velas y comparación de los seis activos), indicadores explicados, estado de la ingesta en vivo y formulario para que los exchanges soliciten el Sello. |
+| Serverless | Trabajo programado `binance-velas`: arranca cada 6 horas, guarda las velas que faltan y se apaga. |
+| Mínimo privilegio por tabla | Tercer usuario `api_registro` con solo INSERT en `solicitudes_sello`; nadie más puede leer los datos de contacto. |
 
 ### Hallazgos técnicos que cambiaron el diseño
 
@@ -65,9 +68,11 @@ flowchart LR
     API -->|"solo lectura, TLS"| DB[("MySQL administrado<br/>(proteger)")]
     BW["binance-ws<br/>(ingesta)"] -->|"insert/update, TLS"| DB
     INIT["db-init<br/>(trabajo)"] -.->|"tablas y usuarios"| DB
+    BV["binance-velas<br/>(trabajo programado)"] -->|"velas, TLS"| DB
     GW["GatewaySubnet<br/>reservada"]
   end
   B["Binance WSS"] --> BW
+  BR["Binance REST"] --> BV
   GH["GitHub Actions<br/>+ GHCR"] -.->|"imágenes"| VNET
 ```
 
@@ -77,10 +82,11 @@ flowchart LR
 | Decidir | `api-flask` | Container Apps, HTTPS, CORS solo para el sitio, de 0 a 2 réplicas |
 | Proteger | MySQL | Azure Database for MySQL Flexible Server, sin IP pública, TLS verificado |
 | Ingesta | `binance-ws` | Container Apps, 1 réplica (0 en modo ahorro) |
+| Histórico | `binance-velas` | Trabajo programado de Container Apps (cada 6 h y en cada demo) |
 | Preparación | `db-init` | Trabajo de Container Apps a pedido |
 | Red | VNet 10.10.0.0/16 | `snet-apps`, `snet-mysql` y `GatewaySubnet` (reservada para VPN o ExpressRoute) |
 
-**Seguridad por capas:** cada servicio usa su propio usuario de MySQL con el mínimo de permisos (`ingesta`: SELECT, INSERT, UPDATE; `api_lectura`: solo SELECT). Las claves son secretos de la plataforma, nunca están en el código. Todo el tráfico va cifrado.
+**Seguridad por capas:** cada servicio usa su propio usuario de MySQL con el mínimo de permisos, tabla por tabla: `ingesta` (SELECT, INSERT, UPDATE en las tablas de mercado), `api_lectura` (solo SELECT en las tablas de mercado) y `api_registro` (solo INSERT en `solicitudes_sello`). Las solicitudes del Sello solo las puede leer el administrador. Las claves son secretos de la plataforma, nunca están en el código. Todo el tráfico va cifrado.
 
 ---
 
@@ -90,10 +96,10 @@ Siguiendo la definición de la [CNCF](https://architecture.cncf.io/) y de [AWS](
 
 | Principio | Cómo se cumple en SecureChain |
 | --- | --- |
-| Microservicios | Un servicio por responsabilidad (`binance-ws`, `api-flask`, `db-init`), que se comunican por la base de datos y por una API HTTP. Si la ingesta se cae, la API sigue respondiendo. |
+| Microservicios | Un servicio por responsabilidad (`binance-ws`, `binance-velas`, `api-flask`, `db-init`), que se comunican por la base de datos y por una API HTTP. Si la ingesta se cae, la API sigue respondiendo. |
 | Contenedores y orquestación | Una imagen Docker por servicio, ejecutada por un orquestador administrado (Container Apps, que usa Kubernetes por debajo). Las mismas imágenes corren en AWS ECS/EKS o en cualquier Kubernetes. |
 | DevOps y CI/CD | Cada push corre las pruebas y publica las imágenes sin intervención manual. El despliegue es un script versionado, no clics en un portal. |
-| Serverless | La API y los trabajos escalan a cero y solo consumen mientras atienden. La siguiente fuente (CoinGecko cada 5 min) está pensada como función programada (AWS Lambda + EventBridge o Azure Functions). |
+| Serverless | La API escala a cero y `binance-velas` es un trabajo programado: solo existe mientras trabaja (menos de un minuto). En AWS sería Lambda + EventBridge Scheduler. El sitio deja de consultar la API cuando la pestaña está oculta, para que pueda apagarse. |
 | Resiliencia y escalabilidad | Reconexión con espera exponencial, sondas de salud que reinician contenedores colgados, escrituras idempotentes, lotes que no se pierden si cae MySQL y escalado automático de la API. |
 | Independencia del proveedor | Código, imágenes y CI viven en GitHub. Cambiar de nube cambia la "plataforma", no la aplicación (ver sección 5). |
 
@@ -154,17 +160,21 @@ bash deploy/desplegar.sh mysql
 bash deploy/desplegar.sh entorno
 DUENO=tomasramirez20 bash deploy/desplegar.sh dbinit
 bash deploy/desplegar.sh binance
+bash deploy/desplegar.sh velas                 # trabajo programado del histórico + primera carga
 bash deploy/desplegar.sh web
 bash deploy/desplegar.sh api
 bash deploy/desplegar.sh subir-web
 bash deploy/desplegar.sh estado
 ```
 
+Si `deploy/.estado` se perdió (nueva sesión de Cloud Shell): `bash deploy/desplegar.sh reconstruir` lo recupera desde Azure sin imprimir claves.
+Para ver las solicitudes del Sello: `bash deploy/desplegar.sh solicitudes` (las lee `db-init` dentro de la red privada).
+
 ### Modo ahorro y demostraciones
 
 ```bash
 bash deploy/ahorro.sh alertas    # alertas de presupuesto al 50/80/100 % del crédito
-bash deploy/ahorro.sh demo       # enciende la ingesta y espera precios en vivo (1 a 2 min)
+bash deploy/ahorro.sh demo       # enciende la ingesta, actualiza las gráficas y espera precios en vivo
 bash deploy/ahorro.sh apagar     # vuelve a modo ahorro
 bash deploy/ahorro.sh estado
 ```
@@ -185,6 +195,8 @@ pip install -r requirements-dev.txt ./common && pytest -v
 | `GET /api/historicos?activo=bitcoin&moneda=usd&intervalo=1d` | Serie histórica |
 | `GET /api/incidentes` | Hacks y exploits recientes |
 | `GET /api/eventos` | Mercados de predicción |
+| `GET /api/velas?intervalo=1h\|1d[&simbolo=][&limite=]` | Velas OHLCV para las gráficas, en formato compacto |
+| `POST /api/solicitudes` | Solicitud del Sello (valida campos, limita envíos y descarta bots) |
 | `GET /healthz`, `GET /readyz` | Vida del proceso y conexión a MySQL |
 
 ---
@@ -194,18 +206,19 @@ pip install -r requirements-dev.txt ./common && pytest -v
 ```
 common/ingesta_common/   config + TLS, logs JSON, backoff, /healthz, escritura en MySQL
 services/binance-ws/     ingesta en tiempo real (WebSocket de Binance)
+services/binance-velas/  trabajo programado: histórico de velas (REST de Binance)
 services/api-flask/      API JSON de solo lectura
-services/db-init/        crea tablas y usuarios de permisos mínimos
-db/schema.sql            precios, historicos, incidentes, eventos
-web/                     frontend estático
+services/db-init/        crea tablas y usuarios de permisos mínimos; lista solicitudes del Sello
+db/schema.sql            precios, velas, historicos, incidentes, eventos, solicitudes_sello
+web/                     Trust Center estático: HTML, CSS, gráficas SVG propias y fuentes IBM Plex (OFL)
 deploy/                  despliegue (desplegar.sh), modo ahorro (ahorro.sh), plantillas
-tests/                   34 pruebas
+tests/                   52 pruebas
 .github/workflows/       CI/CD
 ```
 
 ## 9. Siguientes pasos
 
-1. `coingecko-job` como función serverless (históricos cada 5 min) y `polymarket-ws` con el mismo esqueleto de `binance-ws`.
+1. `polymarket-ws` con el mismo esqueleto de `binance-ws`, y aviso por correo de cada solicitud del Sello.
 2. Fuente de incidentes: el endpoint de hacks de DefiLlama es solo del plan Pro; hay que elegir una alternativa.
 3. Despliegue piloto en AWS `eu-south-2` con la tabla de la sección 5.
 4. Etapa 1 de conectividad cuando el primer aliado la solicite.

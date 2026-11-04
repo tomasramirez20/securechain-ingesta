@@ -3,36 +3,200 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SecureChain · Mercado en vivo</title>
+  <title>SecureChain · Trust Center</title>
+  <meta name="description" content="Precios de criptoactivos en vivo desde Binance, histórico interactivo y solicitud del Sello de Confianza de SecureChain.">
+  <link rel="preload" href="fuentes/ibm-plex-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fuentes/ibm-plex-serif-latin-500-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="estilos.css">
 </head>
 <body>
-  <header>
-    <p class="marca">SecureChain</p>
-    <h1>Mercado en vivo</h1>
-    <p class="estado" id="estado" role="status">Conectando…</p>
+  <a class="saltar" href="#mercado">Ir a los precios</a>
+
+  <header class="barra">
+    <a class="marca" href="#inicio" aria-label="SecureChain, inicio">
+      <svg class="marca-icono" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13"/><path d="M10 16.5l4 4 8-9"/></svg>
+      <span>SecureChain <em>Trust Center</em></span>
+    </a>
+    <nav aria-label="Secciones">
+      <a href="#mercado">Mercado</a>
+      <a href="#grafica">Gráficas</a>
+      <a href="#sello">Sello de Confianza</a>
+    </nav>
   </header>
 
-  <main>
-    <section aria-labelledby="t-precios">
-      <h2 id="t-precios">Precios</h2>
-      <table>
-        <thead>
-          <tr><th>Activo</th><th class="num">Precio</th><th class="num">24 h</th><th>Fuente</th><th>Actualizado</th></tr>
-        </thead>
-        <tbody id="precios"><tr><td colspan="5">Cargando…</td></tr></tbody>
-      </table>
+  <main id="inicio">
+    <section class="portada" aria-labelledby="t-portada">
+      <div class="portada-texto">
+        <h1 id="t-portada">El precio que ves es el precio que hay.</h1>
+        <p class="entrada">Seguimos en vivo seis criptoactivos desde Binance y guardamos su historia para que cualquiera pueda compararla. Con esos datos, SecureChain certifica a los exchanges que quieren operar con confianza en Colombia.</p>
+        <div class="acciones">
+          <a class="boton" href="#grafica">Explorar el histórico</a>
+          <a class="boton boton-claro" href="#sello">Solicitar el Sello</a>
+        </div>
+      </div>
+      <figure class="sello" aria-labelledby="estado-texto">
+        <svg id="roseta" viewBox="-110 -110 220 220" aria-hidden="true"></svg>
+        <figcaption>
+          <span id="estado-punto" class="punto" aria-hidden="true"></span>
+          <span id="estado-texto" role="status" aria-live="polite">Conectando…</span>
+          <small id="estado-detalle"></small>
+        </figcaption>
+      </figure>
     </section>
 
-    <section aria-labelledby="t-incidentes">
-      <h2 id="t-incidentes">Incidentes de seguridad recientes</h2>
-      <ul id="incidentes"><li>Cargando…</li></ul>
+    <section id="mercado" class="bloque" aria-labelledby="t-mercado">
+      <div class="bloque-cabeza">
+        <h2 id="t-mercado">Mercado</h2>
+        <p>Precio en USDT, la moneda estable que en Binance equivale a un dólar. Elige un activo para verlo en la gráfica.</p>
+      </div>
+      <div class="tabla-envoltura">
+        <table class="mercado">
+          <thead>
+            <tr>
+              <th scope="col">Activo</th>
+              <th scope="col" class="num">Precio</th>
+              <th scope="col" class="num">24 h</th>
+              <th scope="col" class="col-chispa">Últimas 24 h</th>
+              <th scope="col" class="num col-volumen">Volumen 24 h</th>
+            </tr>
+          </thead>
+          <tbody id="filas-mercado">
+            <tr><td colspan="5" class="vacio">Cargando precios…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="grafica" class="bloque" aria-labelledby="t-grafica">
+      <div class="grafica-cabeza">
+        <div>
+          <h2 id="t-grafica"><span id="g-nombre">Bitcoin</span> <span id="g-simbolo" class="simbolo">BTC</span></h2>
+          <p class="grafica-precio"><span id="g-precio">—</span> <span id="g-cambio" class="cambio"></span></p>
+        </div>
+        <div class="controles">
+          <div class="segmentos" role="radiogroup" aria-label="Periodo">
+            <button type="button" role="radio" data-periodo="24h">24 h</button>
+            <button type="button" role="radio" data-periodo="7d" aria-checked="true">7 d</button>
+            <button type="button" role="radio" data-periodo="30d">30 d</button>
+            <button type="button" role="radio" data-periodo="1a">1 año</button>
+            <button type="button" role="radio" data-periodo="todo">Todo</button>
+          </div>
+          <div class="segmentos" role="radiogroup" aria-label="Vista">
+            <button type="button" role="radio" data-vista="linea" aria-checked="true">Precio</button>
+            <button type="button" role="radio" data-vista="velas">Velas</button>
+            <button type="button" role="radio" data-vista="comparar">Comparar los seis</button>
+          </div>
+        </div>
+      </div>
+      <div id="lienzo" class="lienzo" tabindex="0" aria-describedby="g-ayuda">
+        <p class="vacio">Cargando el histórico…</p>
+      </div>
+      <p id="g-ayuda" class="ayuda">Pasa el cursor o usa las flechas ← → para recorrer la gráfica.</p>
+      <p id="g-leyenda" class="leyenda" hidden></p>
+
+      <dl id="indicadores" class="indicadores" aria-label="Indicadores del periodo"></dl>
+      <details class="glosario">
+        <summary>¿Qué significa cada indicador?</summary>
+        <dl>
+          <dt>Rendimiento</dt><dd>Cuánto cambió el precio entre el inicio y el final del periodo elegido.</dd>
+          <dt>Rango</dt><dd>El precio más bajo y el más alto que alcanzó en el periodo.</dd>
+          <dt>Volatilidad anualizada</dt><dd>Qué tanto se mueve el precio de un día a otro, expresado por año. Más volatilidad significa más riesgo.</dd>
+          <dt>Caída desde el máximo</dt><dd>Qué tan lejos está hoy del precio más alto del periodo.</dd>
+        </dl>
+      </details>
+    </section>
+
+    <section id="sello" class="bloque sello-bloque" aria-labelledby="t-sello">
+      <div class="sello-explica">
+        <h2 id="t-sello">Sello de Confianza para exchanges</h2>
+        <p>Para el usuario colombiano, la pregunta no es si la tecnología funciona, sino en quién confiar. El Sello responde esa pregunta con una evaluación independiente.</p>
+        <ol class="pasos">
+          <li><strong>Diagnóstico.</strong> Revisamos tus controles de seguridad frente a ISO 27001 y la regulación local.</li>
+          <li><strong>Plan de cierre.</strong> Te entregamos las brechas encontradas y cómo resolverlas.</li>
+          <li><strong>Sello y monitoreo.</strong> Publicamos tu Sello y lo mantenemos vigente con datos de mercado verificables, como los de esta página.</li>
+        </ol>
+        <p class="nota">Tus datos de contacto quedan en una base privada. Ningún servicio público de este sitio puede leerlos.</p>
+      </div>
+
+      <form id="formulario" class="formulario" novalidate>
+        <h3>Solicita el Sello</h3>
+        <div class="campo">
+          <label for="f-empresa">Empresa</label>
+          <input id="f-empresa" name="empresa" autocomplete="organization" maxlength="120" required>
+        </div>
+        <div class="fila-campos">
+          <div class="campo">
+            <label for="f-tipo">Tipo de empresa</label>
+            <select id="f-tipo" name="tipo" required>
+              <option value="">Elige una opción</option>
+              <option value="exchange">Exchange</option>
+              <option value="broker">Broker</option>
+              <option value="custodio">Custodio de activos</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+          <div class="campo">
+            <label for="f-pais">País de operación</label>
+            <input id="f-pais" name="pais" autocomplete="country-name" maxlength="60" value="Colombia" required>
+          </div>
+        </div>
+        <div class="campo">
+          <label for="f-sitio">Sitio web</label>
+          <input id="f-sitio" name="sitio_web" type="url" inputmode="url" placeholder="https://" maxlength="200" required>
+        </div>
+        <div class="fila-campos">
+          <div class="campo">
+            <label for="f-contacto">Nombre de contacto</label>
+            <input id="f-contacto" name="contacto" autocomplete="name" maxlength="120" required>
+          </div>
+          <div class="campo">
+            <label for="f-cargo">Cargo <span class="opcional">(opcional)</span></label>
+            <input id="f-cargo" name="cargo" autocomplete="organization-title" maxlength="80">
+          </div>
+        </div>
+        <div class="campo">
+          <label for="f-correo">Correo corporativo</label>
+          <input id="f-correo" name="correo" type="email" autocomplete="email" maxlength="160" required>
+        </div>
+        <fieldset class="campo opciones">
+          <legend>¿Qué necesitas?</legend>
+          <label><input type="radio" name="interes" value="diagnostico" checked> Un diagnóstico inicial</label>
+          <label><input type="radio" name="interes" value="sello"> Obtener el Sello</label>
+          <label><input type="radio" name="interes" value="renovacion"> Renovar el Sello</label>
+        </fieldset>
+        <div class="campo">
+          <label for="f-mensaje">Mensaje <span class="opcional">(opcional)</span></label>
+          <textarea id="f-mensaje" name="mensaje" rows="3" maxlength="1000"></textarea>
+        </div>
+        <div class="trampa" aria-hidden="true">
+          <label for="f-fax">No llenar</label>
+          <input id="f-fax" name="fax" tabindex="-1" autocomplete="off">
+        </div>
+        <label class="acepto">
+          <input type="checkbox" name="acepta" required>
+          Autorizo a SecureChain a usar estos datos solo para responder esta solicitud.
+        </label>
+        <p id="f-error" class="error-general" role="alert" hidden></p>
+        <button type="submit" class="boton">Enviar solicitud</button>
+      </form>
+      <div id="confirmacion" class="confirmacion" tabindex="-1" hidden>
+        <h3>Solicitud enviada</h3>
+        <p>Tu número de referencia es <strong id="c-referencia"></strong>. Te escribiremos al correo que registraste para continuar con tu solicitud.</p>
+        <button type="button" class="boton boton-claro" id="c-otra">Enviar otra solicitud</button>
+      </div>
     </section>
   </main>
 
-  <footer>Datos: Binance (tiempo real). Las 3 capas: este sitio muestra, api-flask decide, MySQL protege.</footer>
+  <footer class="pie">
+    <div>
+      <h2>De dónde sale cada dato</h2>
+      <p>Binance envía los precios a nuestro servicio de ingesta en Azure (España). Se guardan en una base de datos privada, sin acceso desde Internet, y una API de solo lectura los entrega a esta página. El histórico lo actualiza un trabajo programado que solo se enciende mientras trabaja.</p>
+    </div>
+    <p class="pie-legal">Información de referencia, no es asesoría de inversión. Datos de mercado: Binance. Código abierto en <a href="https://github.com/tomasramirez20/securechain-ingesta">GitHub</a>.</p>
+  </footer>
 
   <script src="config.js"></script>
+  <script src="graficas.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

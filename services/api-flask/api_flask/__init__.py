@@ -8,6 +8,8 @@ Endpoints:
   GET /api/historicos?activo=bitcoin&moneda=usd&intervalo=1d[&desde=2026-10-01][&limite=365]
   GET /api/incidentes[?desde=2026-01-01][&limite=50]
   GET /api/eventos[?limite=50]
+  GET /api/velas?intervalo=1h|1d[&simbolo=BTCUSDT][&limite=24]   velas OHLCV para gráficas
+  POST /api/solicitudes               solicitud del Sello de Confianza (formulario del sitio)
   GET /healthz                        vida del proceso (no toca MySQL)
   GET /readyz                         listo para recibir tráfico (MySQL responde)
 
@@ -18,7 +20,8 @@ precisión al pasar por JSON; las fechas, en ISO 8601 UTC con "Z".
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from flask import Flask, jsonify, request
@@ -27,10 +30,15 @@ from werkzeug.exceptions import HTTPException
 from ingesta_common.config import config_mysql_desde_env, env_lista, env_str
 from ingesta_common.logs import configurar_logs
 
+from .registro import LimitadorTasa, Registro, SolicitudInvalida, validar
 from .repositorio import Repositorio
 
 INTERVALOS = {"5m", "1h", "1d"}
+INTERVALOS_VELAS = {"1h": timedelta(hours=1), "1d": timedelta(days=1)}
+LIMITE_VELAS_DEFECTO = {"1h": 24, "1d": 365}
 LIMITE_MAXIMO = 1000
+SIMBOLO = re.compile(r"^[A-Z0-9]{2,20}$")
+CAMPO_TRAMPA = "fax"  # campo oculto del formulario: una persona no lo ve; un bot suele llenarlo
 
 
 class ErrorPeticion(ValueError):
@@ -76,11 +84,29 @@ def _fecha(nombre: str) -> date | None:
         raise ErrorPeticion(f"{nombre} debe tener formato AAAA-MM-DD") from None
 
 
-def crear_app(repo: Repositorio | None = None) -> Flask:
+def _ms(ts: datetime) -> int:
+    return int(ts.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def _registro_desde_env() -> Registro | None:
+    """El formulario solo se activa si hay credenciales del usuario api_registro."""
+    usuario = env_str("MYSQL_REGISTRO_USER")
+    clave = env_str("MYSQL_REGISTRO_PASSWORD")
+    if not (usuario and clave):
+        return None
+    cfg = config_mysql_desde_env()
+    return Registro(cfg["host"], cfg["puerto"], usuario, clave, cfg["base"], cfg["tls"])
+
+
+def crear_app(repo: Repositorio | None = None, registro: Registro | None = None,
+              limitador: LimitadorTasa | None = None) -> Flask:
     log = configurar_logs("api-flask", env_str("NIVEL_LOG", "INFO"))
     app = Flask(__name__)
     app.json.sort_keys = False
+    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024  # un formulario nunca pesa más
     repo = repo or Repositorio(**config_mysql_desde_env())
+    registro = registro if registro is not None else _registro_desde_env()
+    limitador = limitador or LimitadorTasa()
     # CORS desde la app solo para pruebas locales. En Azure lo maneja el ingress
     # de Container Apps (dejar CORS_ORIGENES vacío para no duplicar cabeceras).
     origenes = set(env_lista("CORS_ORIGENES", ""))
@@ -91,6 +117,8 @@ def crear_app(repo: Repositorio | None = None) -> Flask:
         origen = request.headers.get("Origin")
         if origen and origen in origenes:
             resp.headers["Access-Control-Allow-Origin"] = origen
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
             resp.headers["Vary"] = "Origin"
         return resp
 
@@ -157,6 +185,50 @@ def crear_app(repo: Repositorio | None = None) -> Flask:
     def incidentes():
         filas = _filas(repo.incidentes(_fecha("desde"), _limite(50)))
         return jsonify(datos=filas, total=len(filas))
+
+    @app.get("/api/velas")
+    def velas():
+        intervalo = request.args.get("intervalo", "1h")
+        if intervalo not in INTERVALOS_VELAS:
+            raise ErrorPeticion(f"intervalo debe ser uno de {sorted(INTERVALOS_VELAS)}")
+        simbolo = (request.args.get("simbolo") or "").upper() or None
+        if simbolo and not SIMBOLO.match(simbolo):
+            raise ErrorPeticion("simbolo inválido (p. ej. BTCUSDT)")
+        limite = _limite(LIMITE_VELAS_DEFECTO[intervalo])
+        desde = (datetime.now(timezone.utc).replace(tzinfo=None)
+                 - INTERVALOS_VELAS[intervalo] * limite)
+        series: dict[str, list] = {}
+        for f in repo.velas(intervalo, desde, simbolo):
+            # Formato compacto para gráficas: [ms, apertura, máximo, mínimo, cierre, volumen].
+            series.setdefault(f["simbolo"], []).append(
+                [_ms(f["apertura_ts"]), float(f["apertura"]), float(f["maximo"]),
+                 float(f["minimo"]), float(f["cierre"]), float(f["volumen"])])
+        resp = jsonify(intervalo=intervalo, series=series)
+        resp.headers["Cache-Control"] = "public, max-age=60"
+        return resp
+
+    @app.post("/api/solicitudes")
+    def solicitudes():
+        if registro is None:
+            return jsonify(error="el formulario no está disponible en este momento"), 503
+        datos = request.get_json(silent=True)
+        if isinstance(datos, dict) and datos.get(CAMPO_TRAMPA):
+            # Un bot llenó el campo oculto: se le responde como si nada, pero no se guarda.
+            log.info("Solicitud descartada por el campo trampa")
+            return jsonify(referencia="SC-RECIBIDA"), 201
+        cliente = (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
+        if not limitador.permitir(cliente):
+            return jsonify(error="demasiadas solicitudes; intenta de nuevo en unos minutos"), 429
+        try:
+            limpio = validar(datos)
+        except SolicitudInvalida as e:
+            return jsonify(error="revisa los campos marcados", campos=e.errores), 400
+        referencia = registro.guardar(limpio)
+        # Nunca se registran datos de contacto en los logs: solo la referencia y el tipo.
+        log.info("Solicitud del Sello recibida", extra={"datos": {"referencia": referencia,
+                                                                  "tipo": limpio["tipo"],
+                                                                  "interes": limpio["interes"]}})
+        return jsonify(referencia=referencia), 201
 
     @app.get("/api/eventos")
     def eventos():
