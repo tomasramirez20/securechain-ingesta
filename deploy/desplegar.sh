@@ -211,14 +211,27 @@ velas)
   ;;
 
 solicitudes)
-  requerir MYSQL_FQDN
+  requerir MYSQL_FQDN DUENO
   titulo "Últimas solicitudes del Sello (las lee db-init dentro de la VNet)"
+  # Al cambiar el comando, Container Apps reemplaza el contenedor completo: hay que repetir las variables.
+  # Se ejecuta el archivo y no "-m modulo", porque az confunde "-m" con una opción propia.
   ejecucion=$(az containerapp job start -g "$GRUPO" -n db-init --container-name db-init \
     --image "ghcr.io/${DUENO}/securechain-db-init:latest" \
-    --command "python" --args "-m" "db_init.solicitudes" --query name -o tsv)
+    --command "python" --args "/app/db_init/solicitudes.py" \
+    --env-vars "MYSQL_HOST=$MYSQL_FQDN" "MYSQL_DATABASE=$BASE" "MYSQL_ADMIN_USER=$ADMIN_MYSQL" \
+      "MYSQL_ADMIN_PASSWORD=secretref:admin-pw" \
+    --query name -o tsv)
   esperar_trabajo db-init "$ejecucion" || exit 1
-  echo "Los resultados están en los logs de la ejecución $ejecucion:"
-  echo "  portal → Container Apps Jobs → db-init → Historial de ejecuciones → $ejecucion → Logs de consola"
+  echo "Leyendo el resultado (Log Analytics tarda de 1 a 3 minutos en recibirlo)..."
+  az config set extension.use_dynamic_install=yes_without_prompt -o none 2>/dev/null
+  ws=$(az monitor log-analytics workspace show -g "$GRUPO" -n "$LOGS" --query customerId -o tsv)
+  for _ in $(seq 1 12); do
+    salida=$(az monitor log-analytics query -w "$ws" --query "[].Log_s" -o tsv --analytics-query \
+      "ContainerAppConsoleLogs_CL | where ContainerGroupName_s startswith '$ejecucion' | order by TimeGenerated asc | project Log_s" 2>/dev/null)
+    if [ -n "$salida" ]; then echo "$salida"; exit 0; fi
+    sleep 20
+  done
+  echo "Los logs aún no llegan. Míralos en: portal → Container Apps Jobs → db-init → Historial de ejecuciones → $ejecucion"
   ;;
 
 reconstruir)
